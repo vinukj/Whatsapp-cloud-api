@@ -1,12 +1,15 @@
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
+const multer = require('multer');
 require('dotenv').config();
-
+const path = require('path');
 const app = express();
 app.use(bodyParser.json());
-
+const xlsx = require('xlsx');
+const upload = multer({ dest: 'uploads/' });
 // Use environment variables
+
 const phoneNumberId = process.env.PHONE_NUMBER_ID;
 const accessToken = process.env.ACCESS_TOKEN;
 const verifyToken = process.env.VERIFY_TOKEN;
@@ -91,6 +94,330 @@ app.post("/sendMessage-noTemplate", (req, res) => {
 
     sendMessage();
 });
+app.post('/sendMessageMultiUser', async (req, res) => {
+    const filePath = path.join(__dirname, 'Book1.xlsx'); 
+    const accountname = req.body.accountname;
+    NUMBER = req.body.amountdue;
+    const duedate = req.body.duedate;
+    
+    const { templateName, languageCode } = req.body;
+    if (!accountname ||  !duedate || !NUMBER) {
+        return res.status(400).send('Missing required fields: message, phoneNoId, or accessToken');
+    }
+
+    try {
+        // Read contacts from Excel file
+        const workbook = xlsx.readFile(filePath);
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const contacts = xlsx.utils.sheet_to_json(worksheet);
+        
+        const sendMessage = (phoneNumber) => {
+            
+               
+            const url = `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`;
+           
+              const  data = {
+                    messaging_product: 'whatsapp',
+                    to: phoneNumber,
+                    type: 'template',
+                    template: {
+                        name: templateName,
+                        language: {
+                            code: languageCode
+                        },
+                        components: [
+                     
+                     {
+                        type:'BODY',
+                        parameters:[
+                            {
+                                type: "text",
+                                "text": accountname
+                            },
+                            {
+                                type: "CURRENCY",
+                                "currency": {
+              "fallback_value": "VALUE",
+              "code": "INR",
+              "amount_1000": NUMBER
+            }
+                                
+                            },
+                            {
+                                type: "DATE_TIME",
+                                "date_time": {
+              "fallback_value": duedate
+            }
+                            },
+                            {
+                                type: "text",
+                                "text": 'Pay to avoid delay fees'
+                            }
+                        ]
+                     }
+                        ]
+                    },
+
+                };
+               
+               const headers = {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${accessToken}`
+                }
+                return axios.post(url, data, { headers }); 
+        };
+        
+        for (const contact of contacts) {
+            const phoneNumber = contact.phoneNumber; 
+               if (!phoneNumber) {
+                console.error('Missing phone number for contact:', contact);
+                continue;
+            }
+
+            try {
+                await sendMessage(phoneNumber);
+                console.log(`Message sent successfully to ${phoneNumber}`);
+            } catch (error) {
+                console.error(`Error sending message to ${phoneNumber}:`, error.response ? error.response.data : error.message);
+            }
+        }
+
+        res.status(200).send('Messages sent successfully');
+    } catch (error) {
+        console.error('Error processing request:', error);
+        res.status(500).send('Error processing request');
+    }
+});
+    
+const formatDate = (value) => {
+ 
+    if (!isNaN(value) && value > 25569) {
+        const date = new Date((value - 25569) * 86400 * 1000);
+        return date.toISOString().split('T')[0]; // Returns date in YYYY-MM-DD format
+    }
+    return value; 
+};
+const formatParams = (params) => {
+    for (const key in params) {
+        params[key] = formatDate(params[key]);
+    }
+    return params;
+};
+app.post('/sendMessageByExcelUpload', upload.single('file'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ status: false, message: 'No file uploaded' });
+        }
+
+        const workbook = xlsx.readFile(req.file.path);
+        const sheetName = workbook.SheetNames[0];
+        const sheet = workbook.Sheets[sheetName];
+        const rows = xlsx.utils.sheet_to_json(sheet);
+       console.log(rows)
+        for (const row of rows) {
+            const { phoneNumber, TemplateType, Template, languageCode, textmessage, ...params } = row;
+             const formattedParams = formatParams(params);
+            if (!Template && textmessage) {
+                await sendTextMessage(phoneNumber, textmessage);
+            } else {
+                
+                await handleApiCall(TemplateType, phoneNumber, Template, languageCode, formattedParams);
+               
+            }
+            
+
+          
+        }
+
+        res.status(200).json({ status: true, message: 'Messages sent successfully' });
+    } catch (error) {
+        console.error("Error processing file:", error.message);
+        res.status(500).json({ status: false, error: error.message });
+    }
+});
+
+const handleApiCall = async (templateType, phoneNumber, templateName, languageCode, params) => {
+    switch (templateType) {
+        case 'Utility':
+            await sendMessageUtility(phoneNumber, templateName, languageCode, params);
+            break;
+        case 'Authentication':
+            await sendMessageAuthentication(phoneNumber, templateName, languageCode, params);
+            break;
+        case 'Marketing':
+                await sendMessageMarketing(phoneNumber, Template, languageCode, params);
+                break;
+        default:
+            console.error("Unsupported template type:", templateType);
+    }
+};
+const sendTextMessage = async (phoneNumber, messageBody) => {
+    const url = `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`;
+    const data = {
+        messaging_product: 'whatsapp',
+        to: phoneNumber,
+        text: {
+            body: messageBody
+        }
+    };
+
+    const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken}`
+    };
+
+    try {
+        const response = await axios.post(url, data, { headers });
+        console.log("Response data:", response.data);
+    } catch (error) {
+        console.error("Error sending text message:", error.response ? error.response.data : error.message);
+    }
+};
+
+const sendMessageUtility = async (phoneNumber, templateName, languageCode, params) => {
+    const url = `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`;
+    const data = {
+        messaging_product: 'whatsapp',
+        to: phoneNumber,
+        type: 'template',
+        template: {
+            name: templateName,
+            language: {
+                code: languageCode
+            },
+            components: [
+                {
+                    type: 'body',
+                    parameters: [
+                        {
+                            type: 'text',
+                            text: params.param1 // accountname
+                        },
+                        {
+                            type: 'currency',
+                            currency: {
+                                fallback_value: 'VALUE',
+                                code: 'INR',
+                                amount_1000: params.param2 // number
+                            }
+                        },
+                        {
+                            type: 'date_time',
+                            date_time: {
+                                fallback_value: params.param3 // duedate
+                            }
+                        },
+                        {
+                            type: 'text',
+                            text: 'Pay to avoid delay fees'
+                        }
+                    ]
+                }
+            ]
+        }
+    };
+
+    const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken}`
+    };
+
+    try {
+        const response = await axios.post(url, data, { headers });
+        console.log("Response data:", response.data);
+    } catch (error) {
+        console.error("Error sending message:", error.response ? error.response.data : error.message);
+    }
+};
+
+const sendMessageAuthentication = async (phoneNumber, templateName, languageCode, params) => {
+    const url = `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`;
+    const data = {
+        messaging_product: 'whatsapp',
+        to: phoneNumber,
+        type: 'template',
+        template: {
+            name: templateName,
+            language: {
+                code: languageCode
+            },
+            components: [
+                {
+                    type: 'body',
+                    parameters: [
+                        {
+                            type: 'text',
+                            text: params.param1 
+                        }
+                    ]
+                },
+                {
+                    type: "button",
+                    sub_type: "url",
+                    index: "0",
+                    parameters: [
+                      {
+                        type: "text",
+                        text: params.param1
+                      }
+                    ]
+                  }
+            ]
+        }
+    };
+
+    const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken}`
+    };
+
+    try {
+        const response = await axios.post(url, data, { headers });
+        console.log("Response data:", response.data);
+    } catch (error) {
+        console.error("Error sending message:", error.response ? error.response.data : error.message);
+    }
+};
+
+const sendMessageMarketing = async (phoneNumber, templateName, languageCode, params) => {
+    const url = `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`;
+    const data = {
+        messaging_product: 'whatsapp',
+        to: phoneNumber,
+        type: 'template',
+        template: {
+            name: templateName,
+            language: {
+                code: languageCode
+            },
+            components: [
+                {
+                    type: 'body',
+                    parameters: [
+                        {
+                            type: 'text',
+                            text: params.text // sample text
+                        }
+                    ]
+                }
+            ]
+        }
+    };
+
+    const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken}`
+    };
+
+    try {
+        const response = await axios.post(url, data, { headers });
+        console.log("Response data:", response.data);
+    } catch (error) {
+        console.error("Error sending message:", error.response ? error.response.data : error.message);
+    }
+};
+
 
 app.get('/webhook', (req, res) => {
     console.log('Received webhook verification request:', req.query);
@@ -109,6 +436,8 @@ app.get('/webhook', (req, res) => {
         res.status(400).send('Bad Request');
     }
 });
+
+
 
 // Webhook endpoint to handle incoming messages
 app.post('/webhook', (req, res) => {
